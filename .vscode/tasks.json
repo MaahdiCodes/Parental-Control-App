@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build TV app",
+            "type": "shell",
+            "command": "powershell -ExecutionPolicy Bypass -File tools/build.ps1",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        }
+    ]
+}

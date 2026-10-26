@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 16:9 launcher banner: dark blue tile with a white shield. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#1E3A8A"
+        android:pathData="M0,0h320v180h-320z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M160,30 L210,48 L210,92 C210,122 188,142 160,152 C132,142 110,122 110,92 L110,48 Z" />
+    <path
+        android:fillColor="#1E3A8A"
+        android:pathData="M148,70 L148,118 L186,94 Z" />
+</vector>

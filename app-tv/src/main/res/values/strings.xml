@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TV Guardian</string>
+    <string name="accessibility_description">TV Guardian uses this to see which app is open, and to enforce the screen-time rules set by a parent.</string>
+</resources>

@@ -1,0 +1,103 @@
+rules_version = '2';
+
+// Who may do what. Layout: see core/src/main/kotlin/com/tvguardian/core/FirestorePaths.kt
+//  - A parent (Google sign-in) owns families/{their uid} and everything under it.
+//  - A TV (anonymous sign-in) may only read its own device doc and update its own status fields.
+//  - Pairing: the TV creates pairingCodes/{code}; the parent claims it and creates the device doc
+//    in the same batch, which is only allowed when the claimed code belongs to that TV.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isParent(familyId) {
+      return signedIn() && request.auth.uid == familyId;
+    }
+
+    function changesOnly(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    // The signed-in user is this TV (its anonymous account).
+    function isThisTv(deviceId) {
+      return signedIn() && request.auth.uid == deviceId;
+    }
+
+    // This TV, and it is still paired (its device doc exists), so a removed TV can't keep writing.
+    function isPairedTv(familyId, deviceId) {
+      return isThisTv(deviceId)
+        && exists(/databases/$(database)/documents/families/$(familyId)/devices/$(deviceId));
+    }
+
+    match /pairingCodes/{code} {
+      // `get` only (no `list`), so nobody can enumerate codes that are waiting to be claimed.
+      allow get: if signedIn()
+        && (resource == null
+            || resource.data.familyId == null
+            || resource.data.agentUid == request.auth.uid);
+
+      allow create: if signedIn()
+        && code.matches('^[0-9]{6}$')
+        && request.resource.data.keys().hasOnly(['agentUid', 'model', 'createdAt', 'expiresAt', 'familyId'])
+        && request.resource.data.agentUid == request.auth.uid
+        && request.resource.data.familyId == null
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt < request.time + duration.value(15, 'm');
+
+      // The parent claims an unclaimed, unexpired code for their own family.
+      allow update: if signedIn()
+        && resource.data.familyId == null
+        && resource.data.expiresAt > request.time
+        && changesOnly(['familyId'])
+        && request.resource.data.familyId == request.auth.uid;
+
+      allow delete: if signedIn() && resource.data.agentUid == request.auth.uid;
+    }
+
+    match /families/{familyId} {
+      allow read, write: if isParent(familyId);
+
+      match /devices/{deviceId} {
+        allow read: if isParent(familyId) || isThisTv(deviceId);
+
+        allow create: if isParent(familyId)
+          && request.resource.data.pairingCode is string
+          && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.agentUid == deviceId
+          && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.familyId == familyId;
+
+        allow update: if (isParent(familyId) && changesOnly(['name']))
+          || (isThisTv(deviceId)
+              && changesOnly(['lastSeen', 'model', 'osVersion', 'agentVersion', 'protection']));
+
+        allow delete: if isParent(familyId);
+
+        // What the TV is showing right now.
+        match /state/{docId} {
+          allow read: if isParent(familyId) || isThisTv(deviceId);
+          allow write: if isPairedTv(familyId, deviceId);
+          allow delete: if isParent(familyId);
+        }
+
+        // Parent -> TV commands. Only the parent creates them; the TV may only report the outcome.
+        match /commands/{commandId} {
+          allow read: if isParent(familyId) || isThisTv(deviceId);
+          allow create: if isParent(familyId)
+            && request.resource.data.keys().hasOnly(['type', 'args', 'status', 'createdAt', 'createdBy'])
+            && request.resource.data.type is string
+            && request.resource.data.status == 'pending'
+            && request.resource.data.createdBy == request.auth.uid;
+          allow update: if isPairedTv(familyId, deviceId) && changesOnly(['status', 'result', 'completedAt']);
+          allow delete: if isParent(familyId);
+        }
+
+        // Watch history, written by the TV, read and cleared by the parent.
+        match /history/{sessionId} {
+          allow read, delete: if isParent(familyId);
+          allow create: if isPairedTv(familyId, deviceId);
+        }
+      }
+    }
+  }
+}
