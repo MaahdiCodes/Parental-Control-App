@@ -62,22 +62,28 @@ service cloud.firestore {
       match /devices/{deviceId} {
         allow read: if isParent(familyId) || isThisTv(deviceId);
 
-        allow create: if isParent(familyId)
-          && request.resource.data.pairingCode is string
-          && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.agentUid == deviceId
-          && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.familyId == familyId;
+        // A Google TV: only with a pairing code that TV published and this parent claimed.
+        // A TV linked through YouTube (e.g. LG): the parent's phone links it and runs it, no agent involved.
+        allow create: if isParent(familyId) && (
+          (request.resource.data.pairingCode is string
+            && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.agentUid == deviceId
+            && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.familyId == familyId)
+          || (request.resource.data.type == 'youtube'
+            && request.resource.data.screenId is string
+            && request.resource.data.keys().hasOnly(['name', 'type', 'screenId', 'model', 'pairedAt', 'youtubeBlocked']))
+        );
 
-        allow update: if (isParent(familyId) && changesOnly(['name']))
+        // The parent: name; and for YouTube-linked TVs, which their phone runs, the heartbeat and block switch.
+        allow update: if (isParent(familyId) && changesOnly(['name', 'lastSeen', 'youtubeBlocked']))
           || (isThisTv(deviceId)
               && changesOnly(['lastSeen', 'model', 'osVersion', 'agentVersion', 'protection']));
 
         allow delete: if isParent(familyId);
 
-        // What the TV is showing right now.
+        // What the TV is showing right now (written by the TV, or by the parent's phone for YouTube-linked TVs).
         match /state/{docId} {
           allow read: if isParent(familyId) || isThisTv(deviceId);
-          allow write: if isPairedTv(familyId, deviceId);
-          allow delete: if isParent(familyId);
+          allow write: if isPairedTv(familyId, deviceId) || isParent(familyId);
         }
 
         // Parent -> TV commands. Only the parent creates them; the TV may only report the outcome.
@@ -92,10 +98,10 @@ service cloud.firestore {
           allow delete: if isParent(familyId);
         }
 
-        // Watch history, written by the TV, read and cleared by the parent.
+        // Watch history, written by the TV (or the parent's phone for YouTube-linked TVs), read and cleared by the parent.
         match /history/{sessionId} {
           allow read, delete: if isParent(familyId);
-          allow create: if isPairedTv(familyId, deviceId);
+          allow create: if isPairedTv(familyId, deviceId) || isParent(familyId);
         }
       }
     }

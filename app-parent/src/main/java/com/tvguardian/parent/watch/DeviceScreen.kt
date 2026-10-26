@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,8 +76,9 @@ fun DeviceScreen(
     var sending by remember { mutableStateOf<String?>(null) }
     var prompt by remember { mutableStateOf<TextPrompt?>(null) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
     val online = DeviceStatus.isOnline(device.lastSeenMillis, now)
-    val locked = nowState?.locked == true
+    val locked = if (device.isYouTubeLink) device.youtubeBlocked else nowState?.locked == true
 
     if (showHistory) {
         BackHandler { showHistory = false }
@@ -87,7 +89,7 @@ fun DeviceScreen(
     val send: (String, Map<String, String>) -> Unit = { type, args ->
         scope.launch {
             sending = type
-            val message = WatchRepository.sendCommand(familyId, device.id, type, args)
+            val message = CommandRouter.send(context, familyId, device, type, args)
             sending = null
             snackbar.showSnackbar(message)
         }
@@ -113,25 +115,44 @@ fun DeviceScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
+                val lastSeen = DeviceStatus.describeLastSeen(device.lastSeenMillis, now)
                 Text(
-                    if (online) "● Online" else "● Offline · last seen ${DeviceStatus.describeLastSeen(device.lastSeenMillis, now)}",
+                    when {
+                        device.isYouTubeLink && online -> "● YouTube is open on this TV"
+                        device.isYouTubeLink -> "● YouTube closed · last open $lastSeen"
+                        online -> "● Online"
+                        else -> "● Offline · last seen $lastSeen"
+                    },
                     color = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!online) {
-                    Text(
-                        "Commands only work while the TV is on.",
-                        style = MaterialTheme.typography.bodySmall,
+                Text(
+                    when {
+                        device.isYouTubeLink ->
+                            "Linked through YouTube: only YouTube can be seen and controlled on this TV. " +
+                                "Controls work while YouTube is open on it."
+                        !online -> "Commands only work while the TV is on."
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            item { NowWatchingCard(nowState, isYouTubeLink = device.isYouTubeLink) }
+            item {
+                if (device.isYouTubeLink) {
+                    YouTubeLinkControls(
+                        blocked = locked,
+                        busy = sending != null,
+                        onCommand = { send(it, emptyMap()) },
+                        onChangeVideo = { prompt = TextPrompt.VIDEO },
+                    )
+                } else {
+                    Controls(
+                        locked = locked,
+                        busy = sending != null,
+                        onCommand = { send(it, emptyMap()) },
+                        onPrompt = { prompt = it },
                     )
                 }
-            }
-            item { NowWatchingCard(nowState) }
-            item {
-                Controls(
-                    locked = locked,
-                    busy = sending != null,
-                    onCommand = { send(it, emptyMap()) },
-                    onPrompt = { prompt = it },
-                )
             }
             item { HistorySummaryCard(history, onClick = { showHistory = true }) }
         }
@@ -182,13 +203,13 @@ fun DeviceScreen(
 }
 
 @Composable
-private fun NowWatchingCard(state: NowState?) {
+private fun NowWatchingCard(state: NowState?, isYouTubeLink: Boolean) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Now watching", style = MaterialTheme.typography.labelLarge)
             val title = state?.title
             if (state == null) {
-                Text("Waiting for the TV…")
+                Text(if (isYouTubeLink) "Nothing yet. Open YouTube on the TV." else "Waiting for the TV…")
                 return@Column
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -230,9 +251,48 @@ private fun NowWatchingCard(state: NowState?) {
                         .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(8.dp))
                         .padding(8.dp)
                 ) {
-                    Text("🔒 The TV is locked", color = MaterialTheme.colorScheme.onErrorContainer)
+                    Text(
+                        if (isYouTubeLink) "🚫 YouTube is blocked on this TV" else "🔒 The TV is locked",
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
                 }
             }
+        }
+    }
+}
+
+/** For TVs linked through YouTube: only what YouTube's own remote control allows. */
+@Composable
+private fun YouTubeLinkControls(
+    blocked: Boolean,
+    busy: Boolean,
+    onCommand: (String) -> Unit,
+    onChangeVideo: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (blocked) {
+            Button(onClick = { onCommand(Commands.UNLOCK) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text("✅ Unblock YouTube")
+            }
+        } else {
+            Button(
+                onClick = { onCommand(Commands.LOCK) },
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) { Text("🚫 Block YouTube (pause anything played)") }
+        }
+        ControlRow {
+            ControlButton("⏸ Pause", busy) { onCommand(Commands.PAUSE) }
+            ControlButton("▶ Play", busy) { onCommand(Commands.PLAY) }
+        }
+        ControlRow {
+            ControlButton("🔉 Vol −", busy) { onCommand(Commands.VOLUME_DOWN) }
+            ControlButton("🔇 Mute", busy) { onCommand(Commands.MUTE) }
+            ControlButton("🔊 Vol +", busy) { onCommand(Commands.VOLUME_UP) }
+        }
+        ControlRow {
+            ControlButton("▶ Change video", busy, onChangeVideo)
         }
     }
 }

@@ -2,9 +2,11 @@ package com.tvguardian.parent.pairing
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -24,6 +26,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.tvguardian.core.PairingCodes
 import com.tvguardian.parent.devices.DevicesRepository
+import com.tvguardian.parent.youtube.YouTubeLinkService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -32,41 +35,63 @@ import kotlinx.coroutines.tasks.await
 fun AddTvDialog(familyId: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var youTubeLink by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("Living room TV") }
     var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val parsedCode = PairingCodes.parse(code)
+    val pairingCode = PairingCodes.parse(code)
+    val youTubeCode = code.filter(Char::isDigit).takeIf { it.length >= 10 }
+    val ready = name.isNotBlank() && (if (youTubeLink) youTubeCode != null else pairingCode != null)
 
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("Add a TV") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Open TV Guardian on the TV. It shows a QR code and a 6-digit code.")
-                OutlinedButton(onClick = {
-                    error = null
-                    // Google's code scanner: no camera permission needed, it runs its own scanning screen.
-                    val scanner = GmsBarcodeScanning.getClient(
-                        context,
-                        GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build(),
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !youTubeLink,
+                        onClick = { youTubeLink = false; code = ""; error = null; name = "Living room TV" },
+                        label = { Text("Google TV") },
                     )
-                    scope.launch {
-                        try {
-                            val raw = scanner.startScan().await().rawValue.orEmpty()
-                            PairingCodes.parse(raw)?.let { code = it }
-                                ?: run { error = "That isn't a TV Guardian QR code." }
-                        } catch (e: CancellationException) {
-                            // Scan screen closed without scanning.
-                        } catch (e: Exception) {
-                            error = "Couldn't scan: ${e.message}. You can type the code instead."
+                    FilterChip(
+                        selected = youTubeLink,
+                        onClick = { youTubeLink = true; code = ""; error = null; name = "LG TV" },
+                        label = { Text("LG / other TV") },
+                    )
+                }
+                if (youTubeLink) {
+                    Text(
+                        "For TVs that can't run TV Guardian (LG, Samsung…). Only YouTube can be seen and controlled.\n\n" +
+                            "On the TV: open YouTube → Settings → Link with TV code, and type the code it shows."
+                    )
+                } else {
+                    Text("Open TV Guardian on the TV. It shows a QR code and a 6-digit code.")
+                    OutlinedButton(onClick = {
+                        error = null
+                        // Google's code scanner: no camera permission needed, it runs its own scanning screen.
+                        val scanner = GmsBarcodeScanning.getClient(
+                            context,
+                            GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build(),
+                        )
+                        scope.launch {
+                            try {
+                                val raw = scanner.startScan().await().rawValue.orEmpty()
+                                PairingCodes.parse(raw)?.let { code = it }
+                                    ?: run { error = "That isn't a TV Guardian QR code." }
+                            } catch (e: CancellationException) {
+                                // Scan screen closed without scanning.
+                            } catch (e: Exception) {
+                                error = "Couldn't scan: ${e.message}. You can type the code instead."
+                            }
                         }
-                    }
-                }) { Text("Scan QR code on TV") }
+                    }) { Text("Scan QR code on TV") }
+                }
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it },
-                    label = { Text("6-digit code") },
+                    label = { Text(if (youTubeLink) "TV code (12 digits)" else "6-digit code") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
@@ -81,12 +106,19 @@ fun AddTvDialog(familyId: String, onDismiss: () -> Unit) {
         },
         confirmButton = {
             Button(
-                enabled = !busy && parsedCode != null && name.isNotBlank(),
+                enabled = !busy && ready,
                 onClick = {
                     scope.launch {
                         busy = true
                         error = null
-                        runCatching { DevicesRepository.pair(familyId, parsedCode!!, name.trim()) }
+                        runCatching {
+                            if (youTubeLink) {
+                                DevicesRepository.pairYouTubeTv(familyId, youTubeCode!!, name.trim())
+                                YouTubeLinkService.start(context)
+                            } else {
+                                DevicesRepository.pair(familyId, pairingCode!!, name.trim())
+                            }
+                        }
                             .onSuccess { onDismiss() }
                             .onFailure { error = it.message }
                         busy = false

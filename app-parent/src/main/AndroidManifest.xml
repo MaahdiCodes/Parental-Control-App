@@ -4,6 +4,13 @@
     <!-- Voice messages to the TV. Asked for only when you first tap "Start recording". -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Background link to the YouTube app on TVs like LG (see YouTubeLinkService). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
@@ -35,6 +42,23 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".youtube.YouTubeLinkService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a parental-control link to the YouTube app on a family TV" />
+        </service>
+
+        <receiver
+            android:name=".youtube.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Download Google's QR scanner UI at install time instead of on first scan. -->
         <meta-data

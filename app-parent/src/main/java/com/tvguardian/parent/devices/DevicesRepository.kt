@@ -5,11 +5,16 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
+import com.tvguardian.core.DeviceTypes
 import com.tvguardian.core.FirestorePaths
+import com.tvguardian.core.youtube.Lounge
+import com.tvguardian.core.youtube.LoungeException
+import com.tvguardian.parent.youtube.Http
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
+import java.io.IOException
 
 data class TvDevice(
     val id: String,
@@ -18,7 +23,15 @@ data class TvDevice(
     val lastSeenMillis: Long?,
     val accessibilityOn: Boolean?,
     val notificationAccessOn: Boolean?,
-)
+    /** [DeviceTypes.GOOGLE_TV] (TV Guardian agent) or [DeviceTypes.YOUTUBE_LINK] (YouTube only, e.g. LG). */
+    val type: String = DeviceTypes.GOOGLE_TV,
+    /** YouTube-linked TVs: the TV's YouTube screen id from pairing. */
+    val screenId: String? = null,
+    /** YouTube-linked TVs: anything played gets paused straight away. */
+    val youtubeBlocked: Boolean = false,
+) {
+    val isYouTubeLink get() = type == DeviceTypes.YOUTUBE_LINK
+}
 
 object DevicesRepository {
     private val db get() = FirebaseFirestore.getInstance()
@@ -63,6 +76,7 @@ object DevicesRepository {
                     db.document(FirestorePaths.device(familyId, tvUid)),
                     mapOf(
                         "name" to name,
+                        "type" to DeviceTypes.GOOGLE_TV,
                         "model" to pairing.getString("model"),
                         "pairingCode" to code,
                         "pairedAt" to FieldValue.serverTimestamp(),
@@ -76,6 +90,46 @@ object DevicesRepository {
             }
             throw e
         }
+    }
+
+    /**
+     * Links a TV through its YouTube app (Settings → Link with TV code), for TVs that can't run
+     * TV Guardian such as LG. Only YouTube can then be seen and controlled.
+     */
+    suspend fun pairYouTubeTv(familyId: String, code: String, name: String) {
+        val screen = try {
+            Lounge.pairWithCode(Http.client, code)
+        } catch (e: LoungeException) {
+            throw PairingException(e.message ?: "YouTube didn't accept that code.")
+        } catch (e: IllegalArgumentException) {
+            throw PairingException(e.message ?: "That isn't a TV code.")
+        } catch (e: IOException) {
+            throw PairingException("Couldn't reach YouTube. Check the phone's internet connection.")
+        }
+        val deviceRef = db.collection(FirestorePaths.devices(familyId)).document()
+        db.batch()
+            .set(
+                db.document(FirestorePaths.family(familyId)),
+                mapOf("ownerUid" to familyId, "updatedAt" to FieldValue.serverTimestamp()),
+                SetOptions.merge(),
+            )
+            .set(
+                deviceRef,
+                mapOf(
+                    "name" to name,
+                    "type" to DeviceTypes.YOUTUBE_LINK,
+                    "screenId" to screen.screenId,
+                    "model" to (screen.name ?: "TV with YouTube"),
+                    "pairedAt" to FieldValue.serverTimestamp(),
+                    "youtubeBlocked" to false,
+                ),
+            )
+            .commit()
+            .await()
+    }
+
+    suspend fun setYouTubeBlocked(familyId: String, deviceId: String, blocked: Boolean) {
+        db.document(FirestorePaths.device(familyId, deviceId)).update("youtubeBlocked", blocked).await()
     }
 
     suspend fun rename(familyId: String, deviceId: String, name: String) {
@@ -103,6 +157,9 @@ object DevicesRepository {
             lastSeenMillis = doc.getTimestamp("lastSeen")?.toDate()?.time,
             accessibilityOn = protection?.get("accessibility") as? Boolean,
             notificationAccessOn = protection?.get("notificationAccess") as? Boolean,
+            type = doc.getString("type") ?: DeviceTypes.GOOGLE_TV,
+            screenId = doc.getString("screenId"),
+            youtubeBlocked = doc.getBoolean("youtubeBlocked") == true,
         )
     }
 }

@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
 import com.tvguardian.core.Commands
@@ -31,7 +32,7 @@ import com.tvguardian.core.YouTubeLinks
 import com.tvguardian.parent.devices.DevicesRepository
 import com.tvguardian.parent.devices.TvDevice
 import com.tvguardian.parent.ui.ParentTheme
-import com.tvguardian.parent.watch.WatchRepository
+import com.tvguardian.parent.watch.CommandRouter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -54,6 +55,7 @@ class ShareToTvActivity : ComponentActivity() {
 
 @Composable
 private fun ShareScreen(videoId: String?, onDone: () -> Unit) {
+    val context = LocalContext.current
     val familyId = FirebaseAuth.getInstance().currentUser?.uid
     val devices by remember(familyId) {
         familyId?.let { DevicesRepository.devices(it) } ?: flowOf(null)
@@ -66,8 +68,8 @@ private fun ShareScreen(videoId: String?, onDone: () -> Unit) {
         if (familyId == null || videoId == null || status != null) return
         scope.launch {
             status = "Sending to ${device.name}…"
-            status = WatchRepository.sendCommand(
-                familyId, device.id, Commands.PLAY_URL, mapOf(Commands.ARG_URL to YouTubeLinks.watchUrl(videoId))
+            status = CommandRouter.send(
+                context, familyId, device, Commands.PLAY_URL, mapOf(Commands.ARG_URL to YouTubeLinks.watchUrl(videoId))
             )
             finished = true
             delay(2_500)

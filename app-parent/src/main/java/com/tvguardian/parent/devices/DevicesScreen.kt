@@ -1,6 +1,11 @@
 package com.tvguardian.parent.devices
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -42,11 +47,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseUser
 import com.tvguardian.core.DeviceStatus
 import com.tvguardian.parent.pairing.AddTvDialog
 import com.tvguardian.parent.watch.DeviceScreen
+import com.tvguardian.parent.youtube.YouTubeLinkService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -69,6 +77,20 @@ fun DevicesScreen(user: FirebaseUser, onSignOut: () -> Unit) {
             delay(15_000)
             now = System.currentTimeMillis()
         }
+    }
+
+    // TVs linked through YouTube (e.g. LG) are watched by a background service on this phone.
+    val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val hasYouTubeLinkedTv = result?.getOrNull()?.any { it.isYouTubeLink } == true
+    LaunchedEffect(hasYouTubeLinkedTv) {
+        if (!hasYouTubeLinkedTv) return@LaunchedEffect
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        YouTubeLinkService.start(context)
     }
 
     managing?.let { DeviceDialog(familyId, it, onDismiss = { managing = null }) }
@@ -148,10 +170,22 @@ private fun DeviceCard(device: TvDevice, now: Long, onClick: () -> Unit) {
             )
             Column(Modifier.padding(start = 16.dp)) {
                 Text(device.name, style = MaterialTheme.typography.titleMedium)
+                val lastSeen = DeviceStatus.describeLastSeen(device.lastSeenMillis, now)
                 Text(
-                    if (online) "Online" else "Offline · last seen ${DeviceStatus.describeLastSeen(device.lastSeenMillis, now)}",
+                    when {
+                        device.isYouTubeLink && online -> "YouTube open"
+                        device.isYouTubeLink -> "YouTube closed · last open $lastSeen"
+                        online -> "Online"
+                        else -> "Offline · last seen $lastSeen"
+                    },
                     color = if (online) OnlineColor else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (device.isYouTubeLink) {
+                    Text("Linked through YouTube", style = MaterialTheme.typography.bodySmall)
+                }
+                if (device.youtubeBlocked) {
+                    Text("🚫 YouTube blocked", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
                 device.model?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 val missing = listOfNotNull(
                     "Accessibility".takeIf { device.accessibilityOn == false },
