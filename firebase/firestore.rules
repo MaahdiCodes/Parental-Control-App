@@ -1,9 +1,11 @@
 rules_version = '2';
 
 // Who may do what. Layout: see core/src/main/kotlin/com/tvguardian/core/FirestorePaths.kt
-//  - A parent (Google sign-in) owns families/{their uid} and everything under it.
+//  - A family is families/{owner's uid}. Its parents are the owner plus anyone in its `parents`
+//    list (added by joining with an invite code); every parent can see and control everything in it.
+//  - users/{uid}.familyId says which family a parent account uses (its own unless it joined one).
 //  - A TV (anonymous sign-in) may only read its own device doc and update its own status fields.
-//  - Pairing: the TV creates pairingCodes/{code}; the parent claims it and creates the device doc
+//  - Pairing: the TV creates pairingCodes/{code}; a parent claims it and creates the device doc
 //    in the same batch, which is only allowed when the claimed code belongs to that TV.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -12,8 +14,31 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function familyPath(familyId) {
+      return /databases/$(database)/documents/families/$(familyId);
+    }
+
+    // The owner, or a parent who joined with an invite.
     function isParent(familyId) {
-      return signedIn() && request.auth.uid == familyId;
+      return signedIn() && (
+        request.auth.uid == familyId
+        || (exists(familyPath(familyId))
+            && request.auth.uid in get(familyPath(familyId)).data.get('parents', []))
+      );
+    }
+
+    // Joining with a valid invite code: may only add yourself to `parents`.
+    function isJoining(familyId) {
+      let invite = get(/databases/$(database)/documents/invites/$(request.resource.data.lastJoinCode));
+      let before = resource.data.get('parents', []);
+      let after = request.resource.data.parents;
+      return signedIn()
+        && changesOnly(['parents', 'parentEmails', 'lastJoinCode'])
+        && after.hasAll(before)
+        && after.size() == before.size() + 1
+        && request.auth.uid in after
+        && invite.data.familyId == familyId
+        && invite.data.expiresAt > request.time;
     }
 
     function changesOnly(fields) {
@@ -46,18 +71,40 @@ service cloud.firestore {
         && request.resource.data.expiresAt is timestamp
         && request.resource.data.expiresAt < request.time + duration.value(15, 'm');
 
-      // The parent claims an unclaimed, unexpired code for their own family.
+      // A parent claims an unclaimed, unexpired code for their family.
       allow update: if signedIn()
         && resource.data.familyId == null
         && resource.data.expiresAt > request.time
         && changesOnly(['familyId'])
-        && request.resource.data.familyId == request.auth.uid;
+        && isParent(request.resource.data.familyId);
 
       allow delete: if signedIn() && resource.data.agentUid == request.auth.uid;
     }
 
+    // Invite codes to join a family as a second parent: valid up to 2 days, readable by code only.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if code.matches('^[A-Z0-9]{8}$')
+        && request.resource.data.keys().hasOnly(['familyId', 'createdBy', 'expiresAt'])
+        && request.resource.data.createdBy == request.auth.uid
+        && isParent(request.resource.data.familyId)
+        && request.resource.data.expiresAt < request.time + duration.value(2, 'd');
+      allow delete: if signedIn() && resource.data.createdBy == request.auth.uid;
+    }
+
+    // Which family a parent account uses: its own, or one that lists it as a parent.
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if signedIn() && request.auth.uid == uid
+        && (request.resource.data.familyId == uid
+            || request.auth.uid in getAfter(familyPath(request.resource.data.familyId)).data.get('parents', []));
+    }
+
     match /families/{familyId} {
-      allow read, write: if isParent(familyId);
+      allow read: if isParent(familyId);
+      allow create: if signedIn() && request.auth.uid == familyId;
+      allow update: if isParent(familyId) || isJoining(familyId);
+      allow delete: if signedIn() && request.auth.uid == familyId;
       // Paired TVs read the family's blocked videos/channels.
       allow read: if isPairedTv(familyId, request.auth.uid);
 
@@ -72,11 +119,12 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/pairingCodes/$(request.resource.data.pairingCode)).data.familyId == familyId)
           || (request.resource.data.type == 'youtube'
             && request.resource.data.screenId is string
-            && request.resource.data.keys().hasOnly(['name', 'type', 'screenId', 'model', 'pairedAt', 'youtubeBlocked']))
+            && request.resource.data.keys().hasOnly(['name', 'type', 'screenId', 'model', 'pairedAt', 'youtubeBlocked', 'linkHost']))
         );
 
-        // The parent: name; and for YouTube-linked TVs, which their phone runs, the heartbeat and block switch.
-        allow update: if (isParent(familyId) && changesOnly(['name', 'lastSeen', 'youtubeBlocked']))
+        // A parent: name; and for YouTube-linked TVs, which a parent's phone runs, the heartbeat,
+        // block switch and which phone runs the link.
+        allow update: if (isParent(familyId) && changesOnly(['name', 'lastSeen', 'youtubeBlocked', 'linkHost']))
           || (isThisTv(deviceId)
               && changesOnly(['lastSeen', 'model', 'osVersion', 'agentVersion', 'protection']));
 

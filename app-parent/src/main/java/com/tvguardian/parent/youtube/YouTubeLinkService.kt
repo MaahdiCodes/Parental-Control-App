@@ -17,6 +17,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.tvguardian.parent.MainActivity
 import com.tvguardian.parent.R
 import com.tvguardian.parent.auth.AuthRepository
+import com.tvguardian.parent.family.FamilyRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,7 +54,9 @@ class YouTubeLinkService : Service() {
                     if (user == null) {
                         stopSelf()
                     } else {
-                        YouTubeLinkManager.run(this@YouTubeLinkService, user.uid, onNoLinkedTvs = { stopSelf() })
+                        FamilyRepository.familyId(user.uid).collectLatest { familyId ->
+                            YouTubeLinkManager.run(this@YouTubeLinkService, familyId, onNoLinkedTvs = { stopSelf() })
+                        }
                     }
                 }
             }

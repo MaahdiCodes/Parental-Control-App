@@ -30,6 +30,7 @@ import com.tvguardian.core.Commands
 import com.tvguardian.core.DeviceStatus
 import com.tvguardian.core.YouTubeLinks
 import com.tvguardian.parent.devices.DevicesRepository
+import com.tvguardian.parent.family.FamilyRepository
 import com.tvguardian.parent.devices.TvDevice
 import com.tvguardian.parent.ui.ParentTheme
 import com.tvguardian.parent.watch.CommandRouter
@@ -56,7 +57,8 @@ class ShareToTvActivity : ComponentActivity() {
 @Composable
 private fun ShareScreen(videoId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
-    val familyId = FirebaseAuth.getInstance().currentUser?.uid
+    val uid = FirebaseAuth.getInstance().currentUser?.uid
+    val familyId by remember(uid) { uid?.let { FamilyRepository.familyId(it) } ?: flowOf(null) }.collectAsState(initial = null)
     val devices by remember(familyId) {
         familyId?.let { DevicesRepository.devices(it) } ?: flowOf(null)
     }.collectAsState(initial = null)
@@ -65,6 +67,7 @@ private fun ShareScreen(videoId: String?, onDone: () -> Unit) {
     var finished by remember { mutableStateOf(false) }
 
     fun playOn(device: TvDevice) {
+        val familyId = familyId
         if (familyId == null || videoId == null || status != null) return
         scope.launch {
             status = "Sending to ${device.name}…"
@@ -94,7 +97,7 @@ private fun ShareScreen(videoId: String?, onDone: () -> Unit) {
             val now = System.currentTimeMillis()
             when {
                 videoId == null -> Text("That doesn't look like a YouTube video link.")
-                familyId == null -> Text("Open TV Guardian and sign in first.")
+                uid == null -> Text("Open TV Guardian and sign in first.")
                 status != null -> {
                     if (!finished) CircularProgressIndicator()
                     Text(status.orEmpty())

@@ -68,8 +68,12 @@ object YouTubeLinkManager {
     suspend fun run(context: Context, familyId: String, onNoLinkedTvs: () -> Unit) = coroutineScope {
         val jobs = mutableMapOf<String, Job>()
         launch { BlocksRepository.blocks(familyId).collect { blocks = it } }
+        val thisPhone = remoteDeviceId(context)
         DevicesRepository.devices(familyId).collect { result ->
-            val linked = result.getOrNull()?.filter { it.isYouTubeLink && it.screenId != null } ?: return@collect
+            val all = result.getOrNull()?.filter { it.isYouTubeLink && it.screenId != null } ?: return@collect
+            // Only one parent's phone runs each link (so history isn't recorded twice); an unclaimed one is claimed here.
+            all.filter { it.linkHost == null }.forEach { runCatching { DevicesRepository.setLinkHost(familyId, it.id, thisPhone) } }
+            val linked = all.filter { it.linkHost == thisPhone }
             linked.forEach { devices[it.id] = it }
             val ids = linked.map { it.id }.toSet()
             (jobs.keys - ids).forEach { id ->
@@ -79,21 +83,23 @@ object YouTubeLinkManager {
             linked.filter { it.id !in jobs }.forEach { device ->
                 jobs[device.id] = launch { runLink(context, familyId, device.id) }
             }
-            if (linked.isEmpty()) onNoLinkedTvs()
+            if (linked.isEmpty() && all.none { it.linkHost == null }) onNoLinkedTvs()
         }
     }
 
     /** Runs a command for a YouTube-linked TV and returns a message for the parent. */
-    suspend fun execute(familyId: String, device: TvDevice, type: String, args: Map<String, String>): String {
+    suspend fun execute(context: Context, familyId: String, device: TvDevice, type: String, args: Map<String, String>): String {
         if (type == Commands.LOCK || type == Commands.UNLOCK) {
             val block = type == Commands.LOCK
             DevicesRepository.setYouTubeBlocked(familyId, device.id, block)
-            if (block) runCatching { live[device.id]?.session?.send("pause") }
+            if (block) runCatching { live[device.id]?.session?.send("pause") ?: oneOffLink(context, device).session.send("pause") }
             return if (block) "✓ YouTube blocked: anything played on ${device.name} is paused straight away"
             else "✓ YouTube unblocked"
         }
-        val link = live[device.id]
-            ?: return "YouTube isn't open on ${device.name} right now (or the link is still connecting). Try again in a minute."
+        // The link runs on this phone, or on another parent's phone: then open a short connection just for this.
+        val link = live[device.id] ?: runCatching { oneOffLink(context, device) }.getOrElse {
+            return "YouTube isn't open on ${device.name} right now (${it.message})."
+        }
         return runCatching {
             when (type) {
                 Commands.PAUSE, Commands.STOP -> link.session.send("pause").let { "✓ Paused" }
@@ -126,6 +132,15 @@ object YouTubeLinkManager {
                 else -> "That isn't available for TVs linked through YouTube."
             }
         }.getOrElse { "Failed: ${it.message}" }
+    }
+
+    /** A connection opened just to send a command (no listening, so nothing is recorded twice). */
+    private suspend fun oneOffLink(context: Context, device: TvDevice): LiveLink {
+        val token = Lounge.refreshToken(Http.client, device.screenId ?: throw LoungeException("not linked")).loungeToken
+        if (!Lounge.isOnline(Http.client, token)) throw LoungeException("YouTube is closed on the TV")
+        val session = LoungeSession(Http.client, Http.longPoll, token, remoteDeviceId(context))
+        session.connect()
+        return LiveLink(session)
     }
 
     /** One TV: connect while its YouTube app is open, check back every minute while it's closed. */

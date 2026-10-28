@@ -29,6 +29,8 @@ data class TvDevice(
     val screenId: String? = null,
     /** YouTube-linked TVs: anything played gets paused straight away. */
     val youtubeBlocked: Boolean = false,
+    /** YouTube-linked TVs: the phone (install id) that keeps the link running, so only one phone records it. */
+    val linkHost: String? = null,
 ) {
     val isYouTubeLink get() = type == DeviceTypes.YOUTUBE_LINK
 }
@@ -96,7 +98,7 @@ object DevicesRepository {
      * Links a TV through its YouTube app (Settings → Link with TV code), for TVs that can't run
      * TV Guardian such as LG. Only YouTube can then be seen and controlled.
      */
-    suspend fun pairYouTubeTv(familyId: String, code: String, name: String) {
+    suspend fun pairYouTubeTv(familyId: String, code: String, name: String, linkHost: String) {
         val screen = try {
             Lounge.pairWithCode(Http.client, code)
         } catch (e: LoungeException) {
@@ -122,10 +124,15 @@ object DevicesRepository {
                     "model" to (screen.name ?: "TV with YouTube"),
                     "pairedAt" to FieldValue.serverTimestamp(),
                     "youtubeBlocked" to false,
+                    "linkHost" to linkHost,
                 ),
             )
             .commit()
             .await()
+    }
+
+    suspend fun setLinkHost(familyId: String, deviceId: String, linkHost: String) {
+        db.document(FirestorePaths.device(familyId, deviceId)).update("linkHost", linkHost).await()
     }
 
     suspend fun setYouTubeBlocked(familyId: String, deviceId: String, blocked: Boolean) {
@@ -160,6 +167,7 @@ object DevicesRepository {
             type = doc.getString("type") ?: DeviceTypes.GOOGLE_TV,
             screenId = doc.getString("screenId"),
             youtubeBlocked = doc.getBoolean("youtubeBlocked") == true,
+            linkHost = doc.getString("linkHost"),
         )
     }
 }

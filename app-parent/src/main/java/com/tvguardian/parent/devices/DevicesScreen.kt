@@ -52,9 +52,13 @@ import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseUser
 import com.tvguardian.core.DeviceStatus
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.tvguardian.parent.family.FamilyDialog
+import com.tvguardian.parent.family.FamilyRepository
 import com.tvguardian.parent.pairing.AddTvDialog
 import com.tvguardian.parent.watch.DeviceScreen
 import com.tvguardian.parent.youtube.YouTubeLinkService
+import com.tvguardian.parent.youtube.remoteDeviceId
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -63,11 +67,19 @@ private val OfflineColor = Color(0xFF9CA3AF)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DevicesScreen(user: FirebaseUser, onSignOut: () -> Unit) {
-    val familyId = user.uid
+fun DevicesScreen(user: FirebaseUser, familyId: String, onSignOut: () -> Unit) {
     val result by remember(familyId) { DevicesRepository.devices(familyId) }.collectAsState(initial = null)
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showAddTv by remember { mutableStateOf(false) }
+    var showFamily by remember { mutableStateOf(false) }
+
+    // Removed from a family this account had joined: go back to its own family.
+    val deniedJoinedFamily = familyId != user.uid &&
+        (result?.exceptionOrNull() as? FirebaseFirestoreException)?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+    LaunchedEffect(deniedJoinedFamily) {
+        if (deniedJoinedFamily) runCatching { FamilyRepository.resetToOwnFamily(user.uid) }
+    }
+    if (showFamily) FamilyDialog(user, familyId, onDismiss = { showFamily = false })
     var openDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
     var managing by remember { mutableStateOf<TvDevice?>(null) }
 
@@ -113,7 +125,10 @@ fun DevicesScreen(user: FirebaseUser, onSignOut: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("TV Guardian") },
-                actions = { TextButton(onClick = onSignOut) { Text("Sign out") } },
+                actions = {
+                    TextButton(onClick = { showFamily = true }) { Text("Family") }
+                    TextButton(onClick = onSignOut) { Text("Sign out") }
+                },
             )
         },
         floatingActionButton = {
@@ -131,7 +146,10 @@ fun DevicesScreen(user: FirebaseUser, onSignOut: () -> Unit) {
                 .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Signed in as ${user.email}", style = MaterialTheme.typography.bodySmall)
+            Text(
+                "Signed in as ${user.email}" + if (familyId != user.uid) " · in a shared family" else "",
+                style = MaterialTheme.typography.bodySmall,
+            )
             val current = result
             when {
                 current == null -> CircularProgressIndicator()
@@ -216,6 +234,24 @@ private fun DeviceDialog(familyId: String, device: TvDevice, onDismiss: () -> Un
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true)
+                if (device.isYouTubeLink) {
+                    val context = LocalContext.current
+                    val here = device.linkHost == remoteDeviceId(context)
+                    Text(
+                        if (here) "The YouTube link (history, now-watching, blocking) runs on this phone."
+                        else "The YouTube link runs on another parent's phone. Controls still work from here.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (!here) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { DevicesRepository.setLinkHost(familyId, device.id, remoteDeviceId(context)) }
+                                    .onSuccess { YouTubeLinkService.start(context); onDismiss() }
+                                    .onFailure { error = it.message }
+                            }
+                        }) { Text("Run the link on this phone instead") }
+                    }
+                }
                 if (confirmRemove) {
                     Text("Remove this TV? It will go back to showing a pairing code.", color = MaterialTheme.colorScheme.error)
                 }

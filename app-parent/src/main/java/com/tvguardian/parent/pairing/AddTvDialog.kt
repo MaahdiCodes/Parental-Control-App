@@ -27,6 +27,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.tvguardian.core.PairingCodes
 import com.tvguardian.parent.devices.DevicesRepository
 import com.tvguardian.parent.youtube.YouTubeLinkService
+import com.tvguardian.parent.youtube.remoteDeviceId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -113,7 +114,7 @@ fun AddTvDialog(familyId: String, onDismiss: () -> Unit) {
                         error = null
                         runCatching {
                             if (youTubeLink) {
-                                DevicesRepository.pairYouTubeTv(familyId, youTubeCode!!, name.trim())
+                                DevicesRepository.pairYouTubeTv(familyId, youTubeCode!!, name.trim(), remoteDeviceId(context))
                                 YouTubeLinkService.start(context)
                             } else {
                                 DevicesRepository.pair(familyId, pairingCode!!, name.trim())
