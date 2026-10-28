@@ -24,6 +24,8 @@ data class NowState(
     val foregroundApp: String?,
     val foregroundPackage: String?,
     val mediaApp: String?,
+    /** Known only for YouTube-linked TVs. */
+    val videoId: String?,
     val title: String?,
     val channel: String?,
     val playbackState: String?,
@@ -92,6 +94,7 @@ object WatchRepository {
         foregroundApp = doc.getString("foregroundApp"),
         foregroundPackage = doc.getString("foregroundPackage"),
         mediaApp = doc.getString("mediaApp"),
+        videoId = doc.getString("videoId"),
         title = doc.getString("title"),
         channel = doc.getString("channel"),
         playbackState = doc.getString("playbackState"),

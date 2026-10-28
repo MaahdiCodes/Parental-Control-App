@@ -29,6 +29,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -52,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.tvguardian.core.BlockList
 import com.tvguardian.core.Commands
 import com.tvguardian.core.DeviceStatus
 import com.tvguardian.core.YouTubeLinks
@@ -76,6 +78,9 @@ fun DeviceScreen(
     var sending by remember { mutableStateOf<String?>(null) }
     var prompt by remember { mutableStateOf<TextPrompt?>(null) }
     var showHistory by rememberSaveable { mutableStateOf(false) }
+    val blocks by remember(familyId) { BlocksRepository.blocks(familyId) }.collectAsState(initial = BlockList())
+    var showBlockDialog by remember { mutableStateOf(false) }
+    var showBlockedList by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val online = DeviceStatus.isOnline(device.lastSeenMillis, now)
     val locked = if (device.isYouTubeLink) device.youtubeBlocked else nowState?.locked == true
@@ -136,7 +141,14 @@ fun DeviceScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            item { NowWatchingCard(nowState, isYouTubeLink = device.isYouTubeLink) }
+            item {
+                NowWatchingCard(
+                    nowState,
+                    isYouTubeLink = device.isYouTubeLink,
+                    onOpenOnPhone = { nowState?.let { openOnPhone(context, it) } },
+                    onBlock = { showBlockDialog = true },
+                )
+            }
             item {
                 if (device.isYouTubeLink) {
                     YouTubeLinkControls(
@@ -155,7 +167,57 @@ fun DeviceScreen(
                 }
             }
             item { HistorySummaryCard(history, onClick = { showHistory = true }) }
+            item {
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { showBlockedList = true }
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("🚫 Blocked videos & channels", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "${blocks.channels.size} channels · ${blocks.videos.size} videos · applies to all your TVs",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        Text("›", style = MaterialTheme.typography.headlineMedium)
+                    }
+                }
+            }
         }
+    }
+
+    fun blockAction(message: String, action: suspend () -> Unit) {
+        scope.launch {
+            val result = runCatching { action() }
+            snackbar.showSnackbar(result.fold({ message }, { "Failed: ${it.message}" }))
+        }
+    }
+
+    if (showBlockDialog) {
+        nowState?.let { state ->
+            BlockNowPlayingDialog(
+                state = state,
+                onDismiss = { showBlockDialog = false },
+                onBlockVideo = { video ->
+                    blockAction("✓ Video blocked") { BlocksRepository.blockVideo(familyId, video) }
+                    send(Commands.PAUSE, emptyMap())
+                },
+                onBlockChannel = { channel ->
+                    blockAction("✓ Channel blocked") { BlocksRepository.blockChannel(familyId, channel) }
+                    send(Commands.PAUSE, emptyMap())
+                },
+            )
+        }
+    }
+    if (showBlockedList) {
+        BlockedListDialog(
+            blocks = blocks,
+            onDismiss = { showBlockedList = false },
+            onUnblockVideo = { blockAction("✓ Unblocked") { BlocksRepository.unblockVideo(familyId, it) } },
+            onUnblockChannel = { blockAction("✓ Unblocked") { BlocksRepository.unblockChannel(familyId, it) } },
+        )
     }
 
     when (prompt) {
@@ -203,7 +265,12 @@ fun DeviceScreen(
 }
 
 @Composable
-private fun NowWatchingCard(state: NowState?, isYouTubeLink: Boolean) {
+private fun NowWatchingCard(
+    state: NowState?,
+    isYouTubeLink: Boolean,
+    onOpenOnPhone: () -> Unit,
+    onBlock: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Now watching", style = MaterialTheme.typography.labelLarge)
@@ -239,6 +306,12 @@ private fun NowWatchingCard(state: NowState?, isYouTubeLink: Boolean) {
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                }
+            }
+            if (title != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onOpenOnPhone) { Text("📱 Open on phone") }
+                    OutlinedButton(onClick = onBlock) { Text("🚫 Block…", color = MaterialTheme.colorScheme.error) }
                 }
             }
             state.foregroundApp?.let {

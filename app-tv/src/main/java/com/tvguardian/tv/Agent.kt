@@ -134,6 +134,14 @@ object Agent {
             launch { sync.publishNowWatching() },
             launch { sync.runCommands() },
             launch { sync.recordHistory() },
+            launch {
+                try {
+                    sync.enforceBlocks()
+                } catch (e: FirebaseFirestoreException) {
+                    // Don't let a missing block list take down the rest of the agent.
+                    SpikeState.log("Block list unavailable: ${e.message}")
+                }
+            },
         )
 
         // A cached "doesn't exist" can be stale, so only trust removal when the server says so.

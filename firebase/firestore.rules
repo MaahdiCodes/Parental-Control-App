@@ -58,6 +58,8 @@ service cloud.firestore {
 
     match /families/{familyId} {
       allow read, write: if isParent(familyId);
+      // Paired TVs read the family's blocked videos/channels.
+      allow read: if isPairedTv(familyId, request.auth.uid);
 
       match /devices/{deviceId} {
         allow read: if isParent(familyId) || isThisTv(deviceId);

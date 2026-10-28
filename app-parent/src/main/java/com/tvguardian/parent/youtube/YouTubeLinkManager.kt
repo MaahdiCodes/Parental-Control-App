@@ -8,6 +8,7 @@ import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import com.tvguardian.core.BlockList
 import com.tvguardian.core.Commands
 import com.tvguardian.core.DeviceStatus
 import com.tvguardian.core.FirestorePaths
@@ -22,6 +23,7 @@ import com.tvguardian.core.youtube.LoungePlayback
 import com.tvguardian.core.youtube.LoungeSession
 import com.tvguardian.core.youtube.VideoInfoLookup
 import com.tvguardian.parent.devices.DevicesRepository
+import com.tvguardian.parent.watch.BlocksRepository
 import com.tvguardian.parent.devices.TvDevice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -56,12 +58,16 @@ object YouTubeLinkManager {
     private val live = ConcurrentHashMap<String, LiveLink>()
     private val devices = ConcurrentHashMap<String, TvDevice>()
 
+    @Volatile
+    private var blocks = BlockList()
+
     /**
      * Runs the links for all of the family's YouTube-linked TVs until cancelled.
      * Calls [onNoLinkedTvs] whenever the family has none (so the service can stop).
      */
     suspend fun run(context: Context, familyId: String, onNoLinkedTvs: () -> Unit) = coroutineScope {
         val jobs = mutableMapOf<String, Job>()
+        launch { BlocksRepository.blocks(familyId).collect { blocks = it } }
         DevicesRepository.devices(familyId).collect { result ->
             val linked = result.getOrNull()?.filter { it.isYouTubeLink && it.screenId != null } ?: return@collect
             linked.forEach { devices[it.id] = it }
@@ -217,7 +223,8 @@ object YouTubeLinkManager {
             }
 
             val blocked = devices[deviceId]?.youtubeBlocked == true
-            if (blocked && state == LoungePlayback.PLAYING) runCatching { link.session.send("pause") }
+            val blockedVideo = blocks.reasonFor(title, channel, videoId) != null
+            if ((blocked || blockedVideo) && state == LoungePlayback.PLAYING) runCatching { link.session.send("pause") }
 
             val fields = mutableMapOf<String, Any?>(
                 "foregroundApp" to YOUTUBE,

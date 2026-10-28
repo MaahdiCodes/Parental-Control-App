@@ -3,6 +3,8 @@ package com.tvguardian.core.youtube
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,6 +23,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import java.io.IOException
 
 /**
  * Client for YouTube's "Link with TV code" remote-control protocol (the "lounge" API).
@@ -229,6 +232,10 @@ class LoungeSession(
         }
         try {
             withContext(Dispatchers.IO) { block() }
+        } catch (e: IOException) {
+            // Aborting the request on cancellation surfaces as a network error: report it as the cancellation it is.
+            currentCoroutineContext().ensureActive()
+            throw e
         } finally {
             watcher.cancel()
         }

@@ -7,6 +7,7 @@ import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
+import com.tvguardian.core.BlockList
 import com.tvguardian.core.Commands
 import com.tvguardian.core.FirestorePaths
 import com.tvguardian.core.WatchItem
@@ -15,6 +16,7 @@ import com.tvguardian.core.WatchSessionTracker
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import java.io.ByteArrayOutputStream
 import java.util.Date
@@ -87,6 +89,22 @@ class PairedSync(private val context: Context, private val deviceRef: DocumentRe
                     }.onFailure { SpikeState.log("Couldn't report command result: ${it.message}") }
                 }
             }
+    }
+
+    /** Stops videos and channels the parent blocked: pause, back to the home screen, and say why. */
+    suspend fun enforceBlocks() {
+        val familyRef = deviceRef.parent.parent ?: return
+        val blocks = familyRef.changes().map { BlockList.fromFirestore(it.get("blockedChannels"), it.get("blockedVideos")) }
+        combine(blocks, SpikeState.nowPlaying) { list, playing -> list to playing }.collect { (list, playing) ->
+            if (playing == null || !playing.isPlaying || list.isEmpty) return@collect
+            val reason = list.reasonFor(playing.title, playing.subtitle, videoId = null) ?: return@collect
+            SpikeState.log("Blocked $reason: \"${playing.title}\" (${playing.subtitle})")
+            MediaControl.pause(context)
+            GuardAccessibilityService.instance?.apply {
+                goHome()
+                showBanner(if (reason == "channel") "🚫 This channel is blocked by a parent" else "🚫 This video is blocked by a parent")
+            }
+        }
     }
 
     /** Writes a history entry each time a watched video (10s+ of playing) ends. */
